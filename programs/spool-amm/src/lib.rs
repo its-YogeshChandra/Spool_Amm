@@ -98,3 +98,54 @@ pub struct LpMint<'info> {
     pub system_program: Program<'info, System>,
 }
 
+//lp token ata account
+#[derive(Accounts)]
+pub struct CreateLpAta<'info> {
+    //signer
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    //mint account
+    pub lptokenmint: InterfaceAccount<'info, Mint>,
+
+    //account for the value
+    #[account(init, payer = signer, token::mint = lptokenmint, token::authority =  signer, token::token_program = token_program, seeds = [b"lptokenata", signer.key().as_ref()], bump)]
+    pub lp_ata: InterfaceAccount<'info, TokenAccount>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+}
+
+//lp token creating feature
+#[derive(Accounts)]
+pub struct Mintlptokens<'info> {
+    //signer
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    //mint for lp tokens
+    #[account(mut)]
+    pub lptokenmint: InterfaceAccount<'info, Mint>,
+
+    //user ata account
+    #[account(mut)]
+    pub lpata: InterfaceAccount<'info, TokenAccount>,
+
+    pub token_program: Interface<'info, TokenInterface>,
+}
+
+impl<'info> Mintlptokens<'info> {
+    pub fn mint_tokens(&self, amount: u64) -> Result<()> {
+        //figure the issue
+        let cpi_accounts = MintTo {
+            mint: self.lptokenmint.to_account_info(),
+            to: self.lpata.to_account_info(),
+            authority: self.signer.to_account_info(),
+        };
+
+        //the cpi program
+        let cpi_program = self.token_program.to_account_info();
+        let cpi_context = CpiContext::new(cpi_program, cpi_accounts);
+        token_interface::mint_to(cpi_context, amount)?;
+        Ok(())
+    }
+}
