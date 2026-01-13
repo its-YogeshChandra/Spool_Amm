@@ -59,3 +59,23 @@ pub struct Initialize<'info> {
     #[account(init, payer = signer, token::mint= wsol_mint, token::authority = pool_stateaccount, token::token_program  = token_program, seeds = [b"usdc_vault",wsol_mint.key().as_ref()], bump)]
     pub wsol_vault: InterfaceAccount<'info, TokenAccount>,
 }
+
+#[derive(Accounts)]
+pub struct ProvideLp<'info> {
+    //tranfer the money from
+    pub signer: Signer<'info>,
+
+    //user token account
+    pub user_usdc_account: InterfaceAccount<'info, TokenAccount>,
+    pub user_sol_account: InterfaceAccount<'info, TokenAccount>,
+
+    //vault accounts
+    pub usdc_vault_account: InterfaceAccount<'info, TokenAccount>,
+    pub sol_vault_account: InterfaceAccount<'info, TokenAccount>,
+
+    //token_program
+    pub token_program: Interface<'info, TokenInterface>,
+}
+
+#[derive(Accounts)]
+pub struct Swap<'info> {}
