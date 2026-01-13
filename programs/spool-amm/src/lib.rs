@@ -69,21 +69,21 @@ pub struct ProvideLp<'info> {
 
     //mints for the vaults
     pub usdc_mint: InterfaceAccount<'info, TokenAccount>,
-    pub sol_mint: InterfaceAccount<'info, TokenAccount>,
+    pub wsol_mint: InterfaceAccount<'info, TokenAccount>,
 
     //user token account
+    #[account(mut,token::mint = usdc_mint, token::authority= signer )]
     pub user_usdc_account: InterfaceAccount<'info, TokenAccount>,
-    pub user_sol_account: InterfaceAccount<'info, TokenAccount>,
+    #[account(mut, token::mint= wsol_mint, token::authority = signer)]
+    pub user_wsol_account: InterfaceAccount<'info, TokenAccount>,
 
     //vault accounts
     pub usdc_vault_account: InterfaceAccount<'info, TokenAccount>,
-    pub sol_vault_account: InterfaceAccount<'info, TokenAccount>,
+    pub wsol_vault_account: InterfaceAccount<'info, TokenAccount>,
 
     //token_program
     pub token_program: Interface<'info, TokenInterface>,
 }
-
-//swap struct
 
 //lp token mint
 #[derive(Accounts)]
@@ -92,6 +92,7 @@ pub struct LpMint<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
 
+    //the authority of this mint should be the contract
     #[account(init, payer = signer, mint::decimals = 9, mint::authority = signer.key(), mint::freeze_authority = signer.key())]
     pub mint: InterfaceAccount<'info, Mint>,
     pub token_program: Interface<'info, TokenInterface>,
@@ -127,7 +128,7 @@ pub struct Mintlptokens<'info> {
     pub lptokenmint: InterfaceAccount<'info, Mint>,
 
     //user ata account
-    #[account(mut)]
+    #[account(mut,token::authority= signer, token::mint = lptokenmint)]
     pub lpata: InterfaceAccount<'info, TokenAccount>,
 
     pub token_program: Interface<'info, TokenInterface>,
@@ -135,7 +136,6 @@ pub struct Mintlptokens<'info> {
 
 impl<'info> Mintlptokens<'info> {
     pub fn mint_tokens(&self, amount: u64) -> Result<()> {
-        //figure the issue
         let cpi_accounts = MintTo {
             mint: self.lptokenmint.to_account_info(),
             to: self.lpata.to_account_info(),
@@ -149,3 +149,27 @@ impl<'info> Mintlptokens<'info> {
         Ok(())
     }
 }
+
+//struct for swap
+#[derive(Accounts)]
+pub struct SwapTokens<'info> {
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    //user accounts
+    #[account(mut, token::authority = signer)]
+    pub user_input_account: InterfaceAccount<'info, TokenAccount>,
+    #[account(mut, token::authority = signer)]
+    pub user_output_account: InterfaceAccount<'info, TokenAccount>,
+
+    //vaults for the transaction
+    #[account(mut, token::authority = pool_stateaccount)]
+    pub input_vault_account: InterfaceAccount<'info, TokenAccount>,
+    #[account(mut, token::authority = pool_stateaccount)]
+    pub output_vault_accont: InterfaceAccount<'info, TokenAccount>,
+
+    //pool state for the vault
+    pub pool_stateaccount: Account<'info, LpPoolAccountShape>,
+}
+
+//struct for this token
