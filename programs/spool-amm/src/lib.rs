@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::{
-    token,
+    associated_token::AssociatedToken,
+    token::{self, Token},
     token_interface::{self, Mint, MintTo, TokenAccount, TokenInterface, TransferChecked},
 };
 
@@ -60,10 +61,15 @@ pub struct Initialize<'info> {
     pub wsol_vault: InterfaceAccount<'info, TokenAccount>,
 }
 
+//from the token program
 #[derive(Accounts)]
 pub struct ProvideLp<'info> {
     //tranfer the money from
     pub signer: Signer<'info>,
+
+    //mints for the vaults
+    pub usdc_mint: InterfaceAccount<'info, TokenAccount>,
+    pub sol_mint: InterfaceAccount<'info, TokenAccount>,
 
     //user token account
     pub user_usdc_account: InterfaceAccount<'info, TokenAccount>,
@@ -77,5 +83,18 @@ pub struct ProvideLp<'info> {
     pub token_program: Interface<'info, TokenInterface>,
 }
 
+//swap struct
+
+//lp token mint
 #[derive(Accounts)]
-pub struct Swap<'info> {}
+pub struct LpMint<'info> {
+    //signer for the account
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    #[account(init, payer = signer, mint::decimals = 9, mint::authority = signer.key(), mint::freeze_authority = signer.key())]
+    pub mint: InterfaceAccount<'info, Mint>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+}
+
