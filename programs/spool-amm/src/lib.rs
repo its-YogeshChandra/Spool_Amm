@@ -172,4 +172,16 @@ pub struct SwapTokens<'info> {
     pub pool_stateaccount: Account<'info, LpPoolAccountShape>,
 }
 
-//struct for this token
+//impl  for swap
+impl<'info> SwapTokens<'info> {
+    pub fn checks() {}
+
+    pub fn deductfee() {}
+
+    pub fn swaptokens() {}
+
+    pub fn distributefee() {}
+
+    fn tranferinput() {}
+    fn transferoutput() {}
+}
