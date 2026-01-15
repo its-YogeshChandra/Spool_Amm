@@ -85,6 +85,13 @@ pub struct ProvideLp<'info> {
     pub token_program: Interface<'info, TokenInterface>,
 }
 
+impl<'info> ProvideLp<'info> {
+    //providing lp mainly has signing function
+    fn token_transfer() {
+      let cpi_accounts 
+    }
+}
+
 //lp token mint
 #[derive(Accounts)]
 pub struct LpMint<'info> {
