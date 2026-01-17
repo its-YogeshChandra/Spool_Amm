@@ -23,6 +23,12 @@ pub mod spool_amm {
         Ok(())
     }
 
+    pub fn providelp(ctx: Context<ProvideLp>, wsol_amount: u64, usdc_amount: u64) -> Result<()> {
+        ctx.accounts.token_transfer(wsol_amount, usdc_amount)?;
+        msg!("providing liquidty is successfull");
+        Ok(())
+    }
+
     //funtion to swap tokens
     pub fn swap(ctx: Context<SwapTokens>, amount_toswap: u64) -> Result<()> {
         ctx.accounts.main_swap_function(amount_toswap)?;
