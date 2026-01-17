@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::{
     associated_token::AssociatedToken,
     token::{self, Token},
-    token_interface::{self, Mint, MintTo, TokenAccount, TokenInterface, TransferChecked},
+    token_interface::{self, Burn, Mint, MintTo, TokenAccount, TokenInterface, TransferChecked},
 };
 
 declare_id!("EFuEiBtmr5tPy3iYnQVhMPRVW64R5E1GonrCit8hXa66");
@@ -19,8 +19,14 @@ pub mod spool_amm {
     //create brain pool and the vault
     //create the mintfor the lp tokens
     //create ata creator for lp tokens
-    //provide lp tokens
-    //
+
+    //function to remove lp
+    pub fn remove_liquidity(ctx: Context<RemoveLiquidity>, burnamount: u64) -> Result<()> {
+        //call the main function
+        ctx.accounts.remove_lp_main(burnamount)?;
+        msg!("liquidty removed");
+        Ok(())
+    }
 }
 
 #[account]
@@ -265,72 +271,6 @@ impl<'info> ProvideLp<'info> {
     }
 }
 
-//
-// //lp token mint
-// #[derive(Accounts)]
-// pub struct LpMint<'info> {
-//     //signer for the account
-//     #[account(mut)]
-//     pub signer: Signer<'info>,
-//
-//     //the authority of this mint should be the contract
-//     #[account(init, payer = signer, mint::decimals = 9, mint::authority = signer.key(), mint::freeze_authority = signer.key())]
-//     pub mint: InterfaceAccount<'info, Mint>,
-//     pub token_program: Interface<'info, TokenInterface>,
-//     pub system_program: Program<'info, System>,
-// }
-//
-// //lp token ata account
-// #[derive(Accounts)]
-// pub struct CreateLpAta<'info> {
-//     //signer
-//     #[account(mut)]
-//     pub signer: Signer<'info>,
-//
-//     //mint account
-//     pub lptokenmint: InterfaceAccount<'info, Mint>,
-//
-//     //account for the value
-//     #[account(init, payer = signer, token::mint = lptokenmint, token::authority =  signer, token::token_program = token_program, seeds = [b"lptokenata", signer.key().as_ref()], bump)]
-//     pub lp_ata: InterfaceAccount<'info, TokenAccount>,
-//     pub token_program: Interface<'info, TokenInterface>,
-//     pub system_program: Program<'info, System>,
-// }
-//
-// //lp token creating feature
-// #[derive(Accounts)]
-// pub struct Mintlptokens<'info> {
-//     //signer
-//     #[account(mut)]
-//     pub signer: Signer<'info>,
-//
-//     //mint for lp tokens
-//     #[account(mut)]
-//     pub lptokenmint: InterfaceAccount<'info, Mint>,
-//
-//     //user ata account
-//     #[account(mut,token::authority= signer, token::mint = lptokenmint)]
-//     pub lpata: InterfaceAccount<'info, TokenAccount>,
-//
-//     pub token_program: Interface<'info, TokenInterface>,
-// }
-//
-// impl<'info> Mintlptokens<'info> {
-//     pub fn mint_tokens(&self, amount: u64) -> Result<()> {
-//         let cpi_accounts = MintTo {
-//             mint: self.lptokenmint.to_account_info(),
-//             to: self.lpata.to_account_info(),
-//             authority: self.signer.to_account_info(),
-//         };
-//
-//         //the cpi program
-//         let cpi_program = self.token_program.to_account_info();
-//         let cpi_context = CpiContext::new(cpi_program, cpi_accounts);
-//         token_interface::mint_to(cpi_context, amount)?;
-//         Ok(())
-//     }
-// }
-
 //struct for swap
 #[derive(Accounts)]
 pub struct SwapTokens<'info> {
@@ -493,6 +433,10 @@ pub struct RemoveLiquidity<'info> {
     //signer
     pub signer: Signer<'info>,
 
+    //mint of usdc and wsol
+    pub usdc_mint: InterfaceAccount<'info, Mint>,
+    pub wsol_mint: InterfaceAccount<'info, Mint>,
+
     //user accounts
     #[account(mut,token::mint = pool_state_account.usdc_mint, token::authority = signer)]
     pub user_usdc_account: InterfaceAccount<'info, TokenAccount>,
@@ -527,6 +471,18 @@ pub enum RemoveLiquidityErrors {
 }
 
 impl<'info> RemoveLiquidity<'info> {
+    fn remove_lp_main(&self, burnamount: u64) -> Result<()> {
+        //calcualte the amounts
+        let (transferusdcamount, transfersolamount) = self.calculate_amount(burnamount)?;
+
+        //call the burn function
+        self.burn_lptokens(burnamount)?;
+
+        //call the tranfer function
+        self.token_transfer(transferusdcamount, transfersolamount)?;
+        Ok(())
+    }
+
     fn calculate_amount(&self, burnamount: u64) -> Result<(u64, u64)> {
         let total_supply = self.lp_mint.supply;
         let usdc_vault_amount = self.user_usdc_account.amount;
@@ -552,10 +508,53 @@ impl<'info> RemoveLiquidity<'info> {
         Ok((usdc_return_amount, wsol_return_amount))
     }
 
-    fn token_transfer(&self) {
-        self.tranfer_usdc();
-        self.tranfer_wsol();
+    fn token_transfer(&self, transferusdcamount: u64, transfersolamount: u64) -> Result<()> {
+        self.tranfer_usdc(transferusdcamount)?;
+        self.tranfer_wsol(transfersolamount)?;
+        Ok(())
     }
-    fn tranfer_usdc(&self) {}
-    fn tranfer_wsol(&self) {}
+
+    fn burn_lptokens(&self, burnamount: u64) -> Result<()> {
+        let cpi_accounts = Burn {
+            mint: self.lp_mint.to_account_info(),
+            from: self.user_lp_ata.to_account_info(),
+            authority: self.signer.to_account_info(),
+        };
+
+        let cpi_progam = self.token_program.to_account_info();
+        let cpi_context = CpiContext::new(cpi_progam, cpi_accounts);
+        token_interface::burn(cpi_context, burnamount)?;
+        Ok(())
+    }
+    fn tranfer_usdc(&self, tranferusdcamount: u64) -> Result<()> {
+        let decimals = self.usdc_mint.decimals;
+        //tranfer from user to input vault
+        let cpi_accounts = TransferChecked {
+            mint: self.usdc_mint.to_account_info(),
+            to: self.user_usdc_account.to_account_info(),
+            from: self.usdc_vault_account.to_account_info(),
+            authority: self.signer.to_account_info(),
+        };
+
+        let cpi_program = self.token_program.to_account_info();
+        let cpi_context = CpiContext::new(cpi_program, cpi_accounts);
+        token_interface::transfer_checked(cpi_context, tranferusdcamount, decimals)?;
+        Ok(())
+    }
+
+    fn tranfer_wsol(&self, transfersolamount: u64) -> Result<()> {
+        let decimals = self.wsol_mint.decimals;
+        //tranfer from user to input vault
+        let cpi_accounts = TransferChecked {
+            mint: self.wsol_mint.to_account_info(),
+            to: self.user_wsol_account.to_account_info(),
+            from: self.wsol_vault_account.to_account_info(),
+            authority: self.signer.to_account_info(),
+        };
+
+        let cpi_program = self.token_program.to_account_info();
+        let cpi_context = CpiContext::new(cpi_program, cpi_accounts);
+        token_interface::transfer_checked(cpi_context, transfersolamount, decimals)?;
+        Ok(())
+    }
 }
