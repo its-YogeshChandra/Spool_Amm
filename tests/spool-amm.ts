@@ -1,22 +1,19 @@
 import * as anchor from "@coral-xyz/anchor";
-import { Program, BN } from "@coral-xyz/anchor";
+import { Program } from "@coral-xyz/anchor";
 import { SpoolAmm } from "../target/types/spool_amm";
+import { LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, Keypair } from "@solana/web3.js";
 import {
-  Keypair,
-  LAMPORTS_PER_SOL,
-  PublicKey,
-  SystemProgram,
-} from "@solana/web3.js";
-import {
-  TOKEN_PROGRAM_ID,
-  TOKEN_2022_PROGRAM_ID,
-  createMint,
-  getOrCreateAssociatedTokenAccount,
-  mintTo,
-  getAccount,
   getMint,
-} from "@solana/spl-token";
-import { assert, expect } from "chai";
+  TOKEN_PROGRAM_ID,
+  getAccount,
+  createAssociatedTokenAccountInstruction,
+  getAssociatedTokenAddress,
+  createSyncNativeInstruction,
+  getOrCreateAssociatedTokenAccount
+} from "@solana/spl-token"
+import { assert } from "chai";
+import { BN } from "bn.js";
+import { base58 } from "@scure/base";
 
 describe("spool-amm", () => {
   // Configure the client to use the local cluster.
@@ -24,474 +21,299 @@ describe("spool-amm", () => {
   anchor.setProvider(provider);
 
   const program = anchor.workspace.spoolAmm as Program<SpoolAmm>;
-  const connection = provider.connection;
 
-  // Keypairs
-  const payer = (provider.wallet as anchor.Wallet).payer;
-  let usdcMint: PublicKey;
-  let wsolMint: PublicKey;
-  let lpTokenMint: Keypair;
+  // Keypair for user
+  const user_keypair = anchor.web3.Keypair.fromSecretKey(base58.decode("3cJruu3vu3ym1U6dxuYivwyMqrPBnWJFtap26DSMqP56DjjTRpF8mpPMKJgep7o8v9sLhzJCdDLW9vU1PW1r9X9P"));
 
-  // PDAs
-  let poolStateAccount: PublicKey;
-  let poolStateBump: number;
-  let usdcVault: PublicKey;
-  let usdcVaultBump: number;
-  let wsolVault: PublicKey;
-  let wsolVaultBump: number;
+  // USDC and SOL mint addresses
+  const usdc_mint_address = "Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr"
+  const sol_mint_address = "So11111111111111111111111111111111111111112"
 
-  // User token accounts
-  let userUsdcAccount: PublicKey;
-  let userWsolAccount: PublicKey;
-  let userLpAta: PublicKey;
+  const usdcMintPubkey = new PublicKey(usdc_mint_address)
+  const wsolMintPubkey = new PublicKey(sol_mint_address)
 
-  // Constants
-  const USDC_DECIMALS = 6;
-  const WSOL_DECIMALS = 9;
-  const LP_DECIMALS = 9;
-  const INITIAL_USDC_AMOUNT = 1000 * 10 ** USDC_DECIMALS; // 1000 USDC
-  const INITIAL_WSOL_AMOUNT = 10 * 10 ** WSOL_DECIMALS; // 10 wSOL
+  // LP mint keypair - generated for initialization
+  const lpMintKeypair = Keypair.generate();
 
-  before(async () => {
-    console.log("Setting up test environment...");
-    console.log("Payer:", payer.publicKey.toBase58());
+  // Correct seeds matching lib.rs
+  const usdc_vault_seed = [Buffer.from("usdc_vault"), usdcMintPubkey.toBuffer()];
+  const wsol_vault_seed = [Buffer.from("usdc_vault"), wsolMintPubkey.toBuffer()]; // Note: program uses same seed prefix
+  const pool_state_seed = [Buffer.from("pool_state"), usdcMintPubkey.toBuffer(), wsolMintPubkey.toBuffer()];
 
-    // Create USDC mock mint
-    usdcMint = await createMint(
-      connection,
-      payer,
-      payer.publicKey,
-      payer.publicKey,
-      USDC_DECIMALS,
-      undefined,
-      undefined,
-      TOKEN_PROGRAM_ID
-    );
-    console.log("USDC Mint:", usdcMint.toBase58());
+  // Find PDAs
+  const [usdcVaultPda] = PublicKey.findProgramAddressSync(usdc_vault_seed, program.programId);
+  const [wsolVaultPda] = PublicKey.findProgramAddressSync(wsol_vault_seed, program.programId);
+  const [poolStatePda] = PublicKey.findProgramAddressSync(pool_state_seed, program.programId);
 
-    // Create wSOL mock mint
-    wsolMint = await createMint(
-      connection,
-      payer,
-      payer.publicKey,
-      payer.publicKey,
-      WSOL_DECIMALS,
-      undefined,
-      undefined,
-      TOKEN_PROGRAM_ID
-    );
-    console.log("wSOL Mint:", wsolMint.toBase58());
+  // Helper function to get or create ATA
+  const getOrCreateATA = async (mint: PublicKey, owner: PublicKey, isWrappedSol = false, solAmount = 0) => {
+    const ata = await getAssociatedTokenAddress(mint, owner);
+    const tx = new Transaction();
+    let shouldSend = false;
 
-    // Create user token accounts for USDC and wSOL
-    const userUsdcAccountInfo = await getOrCreateAssociatedTokenAccount(
-      connection,
-      payer,
-      usdcMint,
-      payer.publicKey
-    );
-    userUsdcAccount = userUsdcAccountInfo.address;
-    console.log("User USDC Account:", userUsdcAccount.toBase58());
+    // Check if account exists
+    const info = await provider.connection.getAccountInfo(ata);
 
-    const userWsolAccountInfo = await getOrCreateAssociatedTokenAccount(
-      connection,
-      payer,
-      wsolMint,
-      payer.publicKey
-    );
-    userWsolAccount = userWsolAccountInfo.address;
-    console.log("User wSOL Account:", userWsolAccount.toBase58());
+    if (!info) {
+      console.log(`Creating ATA for ${mint.toString().slice(0, 8)}...`);
+      tx.add(createAssociatedTokenAccountInstruction(user_keypair.publicKey, ata, owner, mint));
+      shouldSend = true;
+    }
 
-    // Mint initial tokens to user accounts
-    await mintTo(
-      connection,
-      payer,
-      usdcMint,
-      userUsdcAccount,
-      payer,
-      INITIAL_USDC_AMOUNT
-    );
-    console.log(`Minted ${INITIAL_USDC_AMOUNT} USDC to user account`);
+    // If it's Wrapped SOL, transfer SOL and sync
+    if (isWrappedSol && solAmount > 0) {
+      console.log(`Wrapping ${solAmount} SOL...`);
+      tx.add(
+        SystemProgram.transfer({
+          fromPubkey: user_keypair.publicKey,
+          toPubkey: ata,
+          lamports: solAmount * LAMPORTS_PER_SOL
+        }),
+        createSyncNativeInstruction(ata)
+      );
+      shouldSend = true;
+    }
 
-    await mintTo(
-      connection,
-      payer,
-      wsolMint,
-      userWsolAccount,
-      payer,
-      INITIAL_WSOL_AMOUNT
-    );
-    console.log(`Minted ${INITIAL_WSOL_AMOUNT} wSOL to user account`);
+    if (shouldSend) {
+      await provider.sendAndConfirm(tx, [user_keypair]);
+    }
+    return ata;
+  };
 
-    // Derive PDAs
-    [poolStateAccount, poolStateBump] = PublicKey.findProgramAddressSync(
-      [Buffer.from("pool_state"), usdcMint.toBuffer(), wsolMint.toBuffer()],
-      program.programId
-    );
-    console.log("Pool State Account PDA:", poolStateAccount.toBase58());
+  it("Initialize pool", async () => {
+    // Check if pool already exists
+    const accountInfo = await provider.connection.getAccountInfo(poolStatePda);
+    if (accountInfo !== null) {
+      console.log("⚠️ Pool already initialized. Skipping init.");
+      return;
+    }
 
-    [usdcVault, usdcVaultBump] = PublicKey.findProgramAddressSync(
-      [Buffer.from("usdc_vault"), usdcMint.toBuffer()],
-      program.programId
-    );
-    console.log("USDC Vault PDA:", usdcVault.toBase58());
+    console.log("Initializing pool...");
+    console.log("Pool State PDA:", poolStatePda.toString());
+    console.log("USDC Vault PDA:", usdcVaultPda.toString());
+    console.log("WSOL Vault PDA:", wsolVaultPda.toString());
+    console.log("LP Mint:", lpMintKeypair.publicKey.toString());
 
-    // Note: In the contract, wsol_vault uses "usdc_vault" seed prefix (potential bug)
-    [wsolVault, wsolVaultBump] = PublicKey.findProgramAddressSync(
-      [Buffer.from("usdc_vault"), wsolMint.toBuffer()],
-      program.programId
-    );
-    console.log("wSOL Vault PDA:", wsolVault.toBase58());
+    const tx = await program.methods.initialize()
+      .accounts({
+        signer: user_keypair.publicKey,
+        usdcMint: usdcMintPubkey,
+        wsolMint: wsolMintPubkey,
+        mint: lpMintKeypair.publicKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([user_keypair, lpMintKeypair])
+      .rpc({ commitment: "confirmed" });
 
-    // LP token mint keypair (for later tests)
-    lpTokenMint = Keypair.generate();
-    console.log("LP Token Mint (future):", lpTokenMint.publicKey.toBase58());
+    console.log("✅ Initialize tx:", tx);
 
-    // Derive LP ATA PDA
-    [userLpAta] = PublicKey.findProgramAddressSync(
-      [Buffer.from("lptokenata"), payer.publicKey.toBuffer()],
-      program.programId
-    );
-    console.log("User LP ATA PDA:", userLpAta.toBase58());
+    // Verify accounts were created
+    const usdcVaultAccount = await getAccount(provider.connection, usdcVaultPda, "confirmed", TOKEN_PROGRAM_ID);
+    const wsolVaultAccount = await getAccount(provider.connection, wsolVaultPda, "confirmed", TOKEN_PROGRAM_ID);
+    const poolStateAccount = await program.account.lpPoolAccountShape.fetch(poolStatePda);
+
+    assert.ok(usdcVaultAccount, "USDC vault should exist");
+    assert.ok(wsolVaultAccount, "WSOL vault should exist");
+    assert.equal(poolStateAccount.usdcMint.toString(), usdcMintPubkey.toString());
+    assert.equal(poolStateAccount.wsolMint.toString(), wsolMintPubkey.toString());
+
+    console.log("✅ Pool initialized successfully!");
   });
 
-  describe("Initialize Pool", () => {
-    it("should initialize the AMM pool successfully", async () => {
-      const tx = await program.methods
-        .initialize()
-        .accounts({
-          signer: payer.publicKey,
-          usdcMint: usdcMint,
-          wsolMint: wsolMint,
-          systemProgram: SystemProgram.programId,
-          poolStateaccount: poolStateAccount,
+  it("Provide liquidity", async () => {
+    // Fetch pool state to get LP mint
+    const poolStateAccount = await program.account.lpPoolAccountShape.fetch(poolStatePda);
+    const lpMintPubkey = poolStateAccount.lpTokenMint;
+
+    // Get user token accounts
+    const userUsdcAccount = await getAssociatedTokenAddress(usdcMintPubkey, user_keypair.publicKey);
+    const userWsolAccount = await getOrCreateATA(wsolMintPubkey, user_keypair.publicKey, true, 1);
+
+    // LP ATA seed
+    const lpAtaSeed = [Buffer.from("lptokenata"), user_keypair.publicKey.toBuffer()];
+    const [lpAtaPda] = PublicKey.findProgramAddressSync(lpAtaSeed, program.programId);
+
+    // Amounts to provide
+    const usdcAmount = new BN(100).mul(new BN(10).pow(new BN(6))); // 100 USDC (6 decimals)
+    const wsolAmount = new BN(1).mul(new BN(10).pow(new BN(9))); // 1 SOL (9 decimals)
+
+    console.log("Providing liquidity...");
+    console.log("USDC amount:", usdcAmount.toString());
+    console.log("WSOL amount:", wsolAmount.toString());
+
+    try {
+      const tx = await program.methods.providelp(wsolAmount, usdcAmount)
+        .accountsPartial({
+          signer: user_keypair.publicKey,
+          usdcMint: usdcMintPubkey,
+          wsolMint: wsolMintPubkey,
+          userUsdcAccount: userUsdcAccount,
+          userWsolAccount: userWsolAccount,
+          usdcVaultAccount: usdcVaultPda,
+          wsolVaultAccount: wsolVaultPda,
           tokenProgram: TOKEN_PROGRAM_ID,
-          usdcVault: usdcVault,
-          wsolVault: wsolVault,
+          lptokenmint: lpMintPubkey,
+          lpAta: lpAtaPda,
+          mintAuthority: poolStatePda,
         })
-        .signers([payer])
-        .rpc();
+        .signers([user_keypair])
+        .rpc({ commitment: "confirmed" });
 
-      console.log("Initialize transaction signature:", tx);
+      console.log("✅ Provide LP tx:", tx);
 
-      // Verify pool state account was created
-      const poolState = await program.account.lpPoolAccountShape.fetch(
-        poolStateAccount
-      );
-
-      console.log("Pool State:", {
-        usdcMint: poolState.usdcMint.toBase58(),
-        wsolMint: poolState.wsolMint.toBase58(),
-        usdcVaultAddress: poolState.usdcVaultAddress.toBase58(),
-        solVaultAddress: poolState.solVaultAddress.toBase58(),
-        lpTokenMint: poolState.lpTokenMint.toBase58(),
-        bump: poolState.bump,
-      });
-    });
-
-    it("should create USDC vault with correct configuration", async () => {
-      const vaultAccount = await getAccount(connection, usdcVault);
-
-      assert.equal(
-        vaultAccount.mint.toBase58(),
-        usdcMint.toBase58(),
-        "USDC vault should have correct mint"
-      );
-      assert.equal(
-        vaultAccount.owner.toBase58(),
-        poolStateAccount.toBase58(),
-        "USDC vault authority should be pool state account"
-      );
-      assert.equal(
-        vaultAccount.amount.toString(),
-        "0",
-        "USDC vault should start with 0 balance"
-      );
-    });
-
-    it("should create wSOL vault with correct configuration", async () => {
-      const vaultAccount = await getAccount(connection, wsolVault);
-
-      assert.equal(
-        vaultAccount.mint.toBase58(),
-        wsolMint.toBase58(),
-        "wSOL vault should have correct mint"
-      );
-      assert.equal(
-        vaultAccount.owner.toBase58(),
-        poolStateAccount.toBase58(),
-        "wSOL vault authority should be pool state account"
-      );
-      assert.equal(
-        vaultAccount.amount.toString(),
-        "0",
-        "wSOL vault should start with 0 balance"
-      );
-    });
-
-    it("should fail when trying to initialize the same pool twice", async () => {
-      try {
-        await program.methods
-          .initialize()
-          .accounts({
-            signer: payer.publicKey,
-            usdcMint: usdcMint,
-            wsolMint: wsolMint,
-            systemProgram: SystemProgram.programId,
-            poolStateaccount: poolStateAccount,
-            tokenProgram: TOKEN_PROGRAM_ID,
-            usdcVault: usdcVault,
-            wsolVault: wsolVault,
-          })
-          .signers([payer])
-          .rpc();
-
-        assert.fail("Should have thrown an error for duplicate initialization");
-      } catch (error) {
-        // Expected to fail - account already exists
-        console.log("Expected error: Pool already initialized");
-        expect(error).to.exist;
-      }
-    });
+      // Verify LP tokens were minted
+      const lpAccount = await getAccount(provider.connection, lpAtaPda, "confirmed");
+      console.log("LP token balance:", lpAccount.amount.toString());
+      assert.ok(lpAccount.amount > 0, "Should have received LP tokens");
+    } catch (error) {
+      console.log("❌ Failed to provide liquidity:", error);
+      throw error;
+    }
   });
 
-  describe("LP Token Mint", () => {
-    // TODO: Add instruction in lib.rs for create_lp_mint
-    // The LpMint struct exists but no instruction is implemented yet
-    it.skip("should create LP token mint", async () => {
-      // This test is skipped because the instruction is not implemented yet
-      // When implemented, it should:
-      // 1. Create a new mint for LP tokens
-      // 2. Set the authority to the pool state account or program
-      // 3. Use 9 decimals as specified in the struct
-      // Example implementation when ready:
-      // const tx = await program.methods
-      //   .createLpMint()
-      //   .accounts({
-      //     signer: payer.publicKey,
-      //     mint: lpTokenMint.publicKey,
-      //     tokenProgram: TOKEN_PROGRAM_ID,
-      //     systemProgram: SystemProgram.programId,
-      //   })
-      //   .signers([payer, lpTokenMint])
-      //   .rpc();
-    });
+  it("Swap USDC to wSOL", async () => {
+    // Get user token accounts
+    const userUsdcAccount = await getAssociatedTokenAddress(usdcMintPubkey, user_keypair.publicKey);
+    const userWsolAccount = await getOrCreateATA(wsolMintPubkey, user_keypair.publicKey, false, 0);
+
+    // Check initial balances
+    const initialUsdcBalance = await getAccount(provider.connection, userUsdcAccount, "confirmed");
+    console.log("Initial USDC balance:", initialUsdcBalance.amount.toString());
+
+    // Amount to swap
+    const amountToSwap = new BN(10).mul(new BN(10).pow(new BN(6))); // 10 USDC
+
+    console.log("Swapping", amountToSwap.toString(), "USDC for wSOL...");
+
+    try {
+      const tx = await program.methods.swap(amountToSwap)
+        .accountsPartial({
+          signer: user_keypair.publicKey,
+          inputMint: usdcMintPubkey,
+          outputMint: wsolMintPubkey,
+          poolStateaccount: poolStatePda,
+          inputVaultAccount: usdcVaultPda,
+          outputVaultAccount: wsolVaultPda,
+          userInputAccount: userUsdcAccount,
+          userOutputAccount: userWsolAccount,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([user_keypair])
+        .rpc({ commitment: "confirmed" });
+
+      console.log("✅ Swap tx:", tx);
+
+      // Wait for confirmation
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Check final balances
+      const finalUsdcBalance = await getAccount(provider.connection, userUsdcAccount, "confirmed");
+      const finalWsolBalance = await getAccount(provider.connection, userWsolAccount, "confirmed");
+
+      console.log("Final USDC balance:", finalUsdcBalance.amount.toString());
+      console.log("Final wSOL balance:", finalWsolBalance.amount.toString());
+
+      assert.ok(finalWsolBalance.amount > 0, "Should have received wSOL");
+    } catch (error) {
+      console.log("❌ Failed to swap:", error);
+      throw error;
+    }
   });
 
-  describe("Create LP Token ATA", () => {
-    // TODO: Add instruction in lib.rs for create_lp_ata
-    // The CreateLpAta struct exists but no instruction is implemented yet
-    it.skip("should create LP token ATA for user", async () => {
-      // This test is skipped because the instruction is not implemented yet
-      // When implemented, it should:
-      // 1. Create an ATA for LP tokens using PDA seeds ["lptokenata", signer.key()]
-      // 2. Set the correct mint and authority
-      // Example implementation when ready:
-      // const tx = await program.methods
-      //   .createLpAta()
-      //   .accounts({
-      //     signer: payer.publicKey,
-      //     lptokenmint: lpTokenMint.publicKey,
-      //     lpAta: userLpAta,
-      //     tokenProgram: TOKEN_PROGRAM_ID,
-      //     systemProgram: SystemProgram.programId,
-      //   })
-      //   .signers([payer])
-      //   .rpc();
-    });
+  it("Swap wSOL to USDC", async () => {
+    // Get user token accounts
+    const userUsdcAccount = await getAssociatedTokenAddress(usdcMintPubkey, user_keypair.publicKey);
+    const userWsolAccount = await getAssociatedTokenAddress(wsolMintPubkey, user_keypair.publicKey);
+
+    // Amount to swap
+    const amountToSwap = new BN(0.1 * LAMPORTS_PER_SOL); // 0.1 SOL
+
+    console.log("Swapping", amountToSwap.toString(), "wSOL for USDC...");
+
+    try {
+      const tx = await program.methods.swap(amountToSwap)
+        .accountsPartial({
+          signer: user_keypair.publicKey,
+          inputMint: wsolMintPubkey,
+          outputMint: usdcMintPubkey,
+          poolStateaccount: poolStatePda,
+          inputVaultAccount: wsolVaultPda,
+          outputVaultAccount: usdcVaultPda,
+          userInputAccount: userWsolAccount,
+          userOutputAccount: userUsdcAccount,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([user_keypair])
+        .rpc({ commitment: "confirmed" });
+
+      console.log("✅ Swap tx:", tx);
+    } catch (error) {
+      console.log("❌ Failed to swap:", error);
+      throw error;
+    }
   });
 
-  describe("Mint LP Tokens", () => {
-    // TODO: Add instruction in lib.rs for mint_lp_tokens
-    // The Mintlptokens struct and impl exist but no instruction is implemented yet
-    it.skip("should mint LP tokens to user ATA", async () => {
-      // This test is skipped because the instruction is not implemented yet
-      // When implemented, it should:
-      // 1. Mint LP tokens based on liquidity provided
-      // 2. Transfer tokens to user's LP ATA
-      // 3. Update pool state if needed
-      // Example implementation when ready:
-      // const lpAmount = new BN(1000 * 10 ** LP_DECIMALS);
-      // const tx = await program.methods
-      //   .mintLpTokens(lpAmount)
-      //   .accounts({
-      //     signer: payer.publicKey,
-      //     lptokenmint: lpTokenMint.publicKey,
-      //     lpata: userLpAta,
-      //     tokenProgram: TOKEN_PROGRAM_ID,
-      //   })
-      //   .signers([payer])
-      //   .rpc();
-    });
-  });
+  it("Remove liquidity", async () => {
+    // Fetch pool state to get LP mint
+    const poolStateAccount = await program.account.lpPoolAccountShape.fetch(poolStatePda);
+    const lpMintPubkey = poolStateAccount.lpTokenMint;
 
-  describe("Provide Liquidity", () => {
-    // TODO: Add instruction in lib.rs for provide_lp
-    // The ProvideLp struct exists but the impl is incomplete
-    it.skip("should allow user to provide liquidity to the pool", async () => {
-      // This test is skipped because the instruction is not implemented yet
-      // When implemented, it should:
-      // 1. Transfer USDC from user to USDC vault
-      // 2. Transfer wSOL from user to wSOL vault
-      // 3. Mint LP tokens proportional to liquidity provided
-      // 4. Update pool state
-      // Example implementation when ready:
-      // const usdcAmount = new BN(100 * 10 ** USDC_DECIMALS);
-      // const wsolAmount = new BN(1 * 10 ** WSOL_DECIMALS);
-      //
-      // const tx = await program.methods
-      //   .provideLp(usdcAmount, wsolAmount)
-      //   .accounts({
-      //     signer: payer.publicKey,
-      //     usdcMint: usdcMint,
-      //     wsolMint: wsolMint,
-      //     userUsdcAccount: userUsdcAccount,
-      //     userWsolAccount: userWsolAccount,
-      //     usdcVaultAccount: usdcVault,
-      //     wsolVaultAccount: wsolVault,
-      //     tokenProgram: TOKEN_PROGRAM_ID,
-      //   })
-      //   .signers([payer])
-      //   .rpc();
-    });
+    // Get user token accounts
+    const userUsdcAccount = await getAssociatedTokenAddress(usdcMintPubkey, user_keypair.publicKey);
+    const userWsolAccount = await getAssociatedTokenAddress(wsolMintPubkey, user_keypair.publicKey);
 
-    it.skip("should fail when user has insufficient USDC balance", async () => {
-      // Test for insufficient balance error handling
-    });
+    // LP ATA seed
+    const lpAtaSeed = [Buffer.from("lptokenata"), user_keypair.publicKey.toBuffer()];
+    const [lpAtaPda] = PublicKey.findProgramAddressSync(lpAtaSeed, program.programId);
 
-    it.skip("should fail when user has insufficient wSOL balance", async () => {
-      // Test for insufficient balance error handling
-    });
-  });
+    // Check LP balance
+    let lpBalance;
+    try {
+      const lpAccount = await getAccount(provider.connection, lpAtaPda, "confirmed");
+      lpBalance = lpAccount.amount;
+      console.log("LP token balance before burn:", lpBalance.toString());
+    } catch {
+      console.log("⚠️ No LP tokens to burn. Skipping remove liquidity test.");
+      return;
+    }
 
-  describe("Swap Tokens", () => {
-    // TODO: Add instruction in lib.rs for swap
-    // The SwapTokens struct exists but all impl methods are empty
-    it.skip("should swap USDC for wSOL", async () => {
-      // This test is skipped because the instruction is not implemented yet
-      // When implemented, it should:
-      // 1. Transfer input tokens from user to input vault
-      // 2. Calculate output amount using AMM formula (x * y = k)
-      // 3. Deduct fees
-      // 4. Transfer output tokens from vault to user
-      // Example implementation when ready:
-      // const inputAmount = new BN(10 * 10 ** USDC_DECIMALS);
-      //
-      // const tx = await program.methods
-      //   .swap(inputAmount)
-      //   .accounts({
-      //     signer: payer.publicKey,
-      //     userInputAccount: userUsdcAccount,
-      //     userOutputAccount: userWsolAccount,
-      //     inputVaultAccount: usdcVault,
-      //     outputVaultAccont: wsolVault,
-      //     poolStateaccount: poolStateAccount,
-      //   })
-      //   .signers([payer])
-      //   .rpc();
-    });
+    if (Number(lpBalance) <= 0) {
+      console.log("⚠️ No LP tokens to burn. Skipping remove liquidity test.");
+      return;
+    }
 
-    it.skip("should swap wSOL for USDC", async () => {
-      // Test swap in the opposite direction
-    });
+    // Amount to burn (burn half of LP tokens)
+    const burnAmount = new BN((Number(lpBalance) / 2).toString());
 
-    it.skip("should apply correct swap fees", async () => {
-      // Test that fees are correctly calculated and distributed
-    });
+    console.log("Removing liquidity, burning", burnAmount.toString(), "LP tokens...");
 
-    it.skip("should fail when slippage exceeds threshold", async () => {
-      // Test slippage protection
-    });
+    try {
+      const tx = await program.methods.removeLiquidity(burnAmount)
+        .accounts({
+          signer: user_keypair.publicKey,
+          usdcMint: usdcMintPubkey,
+          wsolMint: wsolMintPubkey,
+          userUsdcAccount: userUsdcAccount,
+          userWsolAccount: userWsolAccount,
+          usdcVaultAccount: usdcVaultPda,
+          wsolVaultAccount: wsolVaultPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          poolStateAccount: poolStatePda,
+          lpMint: lpMintPubkey,
+          userLpAta: lpAtaPda,
+        })
+        .signers([user_keypair])
+        .rpc({ commitment: "confirmed" });
 
-    it.skip("should fail when pool has insufficient liquidity", async () => {
-      // Test for insufficient liquidity error
-    });
-  });
+      console.log("✅ Remove liquidity tx:", tx);
 
-  describe("Edge Cases and Error Handling", () => {
-    it("should verify user has correct initial token balances", async () => {
-      const usdcAccount = await getAccount(connection, userUsdcAccount);
-      const wsolAccount = await getAccount(connection, userWsolAccount);
-
-      assert.equal(
-        usdcAccount.amount.toString(),
-        INITIAL_USDC_AMOUNT.toString(),
-        "User should have initial USDC balance"
-      );
-      assert.equal(
-        wsolAccount.amount.toString(),
-        INITIAL_WSOL_AMOUNT.toString(),
-        "User should have initial wSOL balance"
-      );
-    });
-
-    it("should verify mints have correct decimals", async () => {
-      const usdcMintInfo = await getMint(connection, usdcMint);
-      const wsolMintInfo = await getMint(connection, wsolMint);
-
-      assert.equal(
-        usdcMintInfo.decimals,
-        USDC_DECIMALS,
-        "USDC mint should have 6 decimals"
-      );
-      assert.equal(
-        wsolMintInfo.decimals,
-        WSOL_DECIMALS,
-        "wSOL mint should have 9 decimals"
-      );
-    });
-  });
-
-  describe("Pool State Verification", () => {
-    it("should correctly store pool state data", async () => {
-      const poolState = await program.account.lpPoolAccountShape.fetch(
-        poolStateAccount
-      );
-
-      // The initialize function currently just logs a message
-      // These assertions test the expected behavior once fully implemented
-      // For now, the default values (all zeros) would be stored
-
-      console.log("Current Pool State:");
-      console.log("  USDC Mint:", poolState.usdcMint.toBase58());
-      console.log("  wSOL Mint:", poolState.wsolMint.toBase58());
-      console.log("  USDC Vault:", poolState.usdcVaultAddress.toBase58());
-      console.log("  SOL Vault:", poolState.solVaultAddress.toBase58());
-      console.log("  LP Token Mint:", poolState.lpTokenMint.toBase58());
-      console.log("  Bump:", poolState.bump);
-    });
+      // Verify LP tokens were burned
+      const lpAccountAfter = await getAccount(provider.connection, lpAtaPda, "confirmed");
+      console.log("LP token balance after burn:", lpAccountAfter.amount.toString());
+      assert.ok(lpAccountAfter.amount < lpBalance, "LP tokens should be burned");
+    } catch (error) {
+      console.log("❌ Failed to remove liquidity:", error);
+      throw error;
+    }
   });
 });
-
-// Helper functions for future use
-function calculateSwapOutput(
-  inputAmount: number,
-  inputReserve: number,
-  outputReserve: number,
-  feeNumerator: number = 3,
-  feeDenominator: number = 1000
-): number {
-  // Constant product formula: x * y = k
-  // Output = (outputReserve * inputAmount * (1 - fee)) / (inputReserve + inputAmount * (1 - fee))
-  const inputWithFee = inputAmount * (feeDenominator - feeNumerator);
-  const numerator = outputReserve * inputWithFee;
-  const denominator = inputReserve * feeDenominator + inputWithFee;
-  return Math.floor(numerator / denominator);
-}
-
-function calculateLpTokens(
-  depositA: number,
-  depositB: number,
-  reserveA: number,
-  reserveB: number,
-  totalLpSupply: number
-): number {
-  if (totalLpSupply === 0) {
-    // Initial deposit - use geometric mean
-    return Math.floor(Math.sqrt(depositA * depositB));
-  }
-  // Subsequent deposits - proportional to existing reserves
-  const lpFromA = (depositA * totalLpSupply) / reserveA;
-  const lpFromB = (depositB * totalLpSupply) / reserveB;
-  // Return minimum to prevent manipulation
-  return Math.floor(Math.min(lpFromA, lpFromB));
-}

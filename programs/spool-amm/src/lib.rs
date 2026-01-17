@@ -19,6 +19,7 @@ pub mod spool_amm {
         pool.wsol_mint = ctx.accounts.wsol_mint.key();
         pool.usdc_vault_address = ctx.accounts.usdc_vault.key();
         pool.wsol_vault_address = ctx.accounts.wsol_vault.key();
+        pool.lp_token_mint = ctx.accounts.mint.key();
         msg!("Greetings from: {:?}", ctx.program_id);
         Ok(())
     }
@@ -85,7 +86,7 @@ pub struct Initialize<'info> {
     //signer for the account
 
     //the authority of this mint should be the contract
-    #[account(init, payer = signer, mint::decimals = 9, mint::authority = pool_stateaccount, mint::freeze_authority = signer.key())]
+    #[account(init, payer = signer, mint::decimals = 9, mint::authority = pool_stateaccount, mint::freeze_authority = pool_stateaccount.key())]
     pub mint: InterfaceAccount<'info, Mint>,
 }
 
@@ -111,13 +112,15 @@ pub struct ProvideLp<'info> {
 
     //user token account
     #[account(mut,token::mint = usdc_mint, token::authority= signer )]
-    pub user_usdc_account: InterfaceAccount<'info, TokenAccount>,
+    pub user_usdc_account: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(mut, token::mint= wsol_mint, token::authority = signer)]
-    pub user_wsol_account: InterfaceAccount<'info, TokenAccount>,
+    pub user_wsol_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     //vault accounts
-    pub usdc_vault_account: InterfaceAccount<'info, TokenAccount>,
-    pub wsol_vault_account: InterfaceAccount<'info, TokenAccount>,
+    #[account(mut)]
+    pub usdc_vault_account: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(mut)]
+    pub wsol_vault_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     //token_program
     pub token_program: Interface<'info, TokenInterface>,
@@ -125,21 +128,20 @@ pub struct ProvideLp<'info> {
     // ---------minting lp token logic --------
     //token account creation----
     //mint of the lp
+    #[account(mut)]
     pub lptokenmint: InterfaceAccount<'info, Mint>,
-
     //account creation
-    #[account(init, payer = signer, token::mint = lptokenmint, token::authority =  signer, token::token_program = token_program, seeds = [b"lptokenata", signer.key().as_ref()], bump)]
-    pub lp_ata: InterfaceAccount<'info, TokenAccount>,
+    #[account(init_if_needed, payer = signer, token::mint = lptokenmint, token::authority = signer, token::token_program = token_program, seeds = [b"lptokenata", signer.key().as_ref()], bump)]
+    pub lp_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     pub system_program: Program<'info, System>,
 
     //for minting lp tokens -------
     //pool state acount for getting seeds
     //mining authority
-    pub mint_authority: Account<'info, LpPoolAccountShape>,
-
-    //user ata account
-    #[account(mut,token::authority= signer, token::mint = lptokenmint)]
-    pub lpata: InterfaceAccount<'info, TokenAccount>,
+    pub mint_authority: Box<Account<'info, LpPoolAccountShape>>,
+    ////user ata account
+    //#[account(mut,token::authority= signer, token::mint = lptokenmint)]
+    //pub lpata: InterfaceAccount<'info, TokenAccount>,
 }
 
 impl<'info> ProvideLp<'info> {
@@ -361,15 +363,15 @@ impl<'info> SwapTokens<'info> {
             //then output vault should be the wsol vault
             if self.output_vault_account.key() != self.pool_stateaccount.wsol_vault_address {
                 return err!(SwapTokenErrors::OutputVaultError);
-            } else if self.input_vault_account.key() == self.pool_stateaccount.wsol_vault_address {
-                //then output vault should be the usdc vault
-                if self.output_vault_account.key() != self.pool_stateaccount.usdc_vault_address {
-                    return err!(SwapTokenErrors::OutputVaultError);
-                }
-            } else {
-                //throw the eror for input vault
-                return err!(SwapTokenErrors::InputVaultError);
             }
+        } else if self.input_vault_account.key() == self.pool_stateaccount.wsol_vault_address {
+            //then output vault should be the usdc vault
+            if self.output_vault_account.key() != self.pool_stateaccount.usdc_vault_address {
+                return err!(SwapTokenErrors::OutputVaultError);
+            }
+        } else {
+            //throw the eror for input vault
+            return err!(SwapTokenErrors::InputVaultError);
         }
 
         Ok(())
@@ -404,8 +406,8 @@ impl<'info> SwapTokens<'info> {
         let product_before_swap = (input_vaultamount * output_vaultamount) as u128;
 
         //formula to calculate amount
-        let outputamount =
-            (input_vaultamount * output_vaultamount) / (input_vaultamount + input_amount as u128);
+        let outputamount = (output_vaultamount * input_amount as u128)
+            / (input_vaultamount + input_amount as u128);
 
         //check if the product before and after is same
         let input_vault_afterswap = input_vaultamount + input_amount as u128;
@@ -444,7 +446,7 @@ impl<'info> SwapTokens<'info> {
             mint: self.output_mint.to_account_info(),
             from: self.output_vault_account.to_account_info(),
             to: self.user_output_account.to_account_info(),
-            authority: self.signer.to_account_info(),
+            authority: self.pool_stateaccount.to_account_info(),
         };
 
         let seeds = [

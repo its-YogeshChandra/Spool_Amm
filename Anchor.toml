@@ -12,7 +12,7 @@ spool_amm = "EFuEiBtmr5tPy3iYnQVhMPRVW64R5E1GonrCit8hXa66"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
