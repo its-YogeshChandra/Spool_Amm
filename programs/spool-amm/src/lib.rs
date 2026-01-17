@@ -67,6 +67,15 @@ pub struct Initialize<'info> {
     pub mint: InterfaceAccount<'info, Mint>,
 }
 
+#[error_code]
+pub enum ProvideLpErrors {
+    #[msg("multiplication error")]
+    MultiplicationError,
+
+    #[msg("liquidity too low")]
+    LiquidityTooLow,
+}
+
 //from the token program
 #[derive(Accounts)]
 pub struct ProvideLp<'info> {
@@ -114,9 +123,15 @@ pub struct ProvideLp<'info> {
 impl<'info> ProvideLp<'info> {
     //providing lp mainly has signing function
     fn token_transfer(&self, wsol_amount: u64, usdc_amount: u64) -> Result<()> {
+        //calculate the lp token amount need to provide
+        let lp_amount = self.lptoken_amount(usdc_amount, wsol_amount).unwrap();
+
         //tranfer function for usdc and sol
         self.tranfer_usdc(usdc_amount)?;
         self.tranfer_wsol(wsol_amount)?;
+
+        //min lp token function
+        self.mint_lptokens(lp_amount as u64)?;
         Ok(())
     }
 
@@ -154,7 +169,75 @@ impl<'info> ProvideLp<'info> {
         Ok(())
     }
 
-    fn lptoken_amount() {}
+    fn lptoken_amount(&self, usdc_amount: u64, wsol_amount: u64) -> Result<u64> {
+        //burn constant to prevent inflation attack
+        const MINIMUM_LIQUIDITY: u64 = 1000;
+
+        //lp share on the basis of total lp supply
+        let total_supply = self.lptokenmint.supply;
+
+        //the lp amount
+        let lp_amount: u64;
+
+        if total_supply == 0 {
+            let (lp, _) = self
+                .first_time_amount(usdc_amount, wsol_amount, MINIMUM_LIQUIDITY)
+                .unwrap();
+            lp_amount = lp;
+        } else {
+            let (lp, _) = self.normal_amount(usdc_amount, wsol_amount).unwrap();
+            lp_amount = lp
+        }
+
+        Ok(lp_amount)
+    }
+
+    fn first_time_amount(
+        &self,
+        usdc_amount: u64,
+        wsol_amount: u64,
+        minimum_liquidity: u64,
+    ) -> Result<(u64, u64)> {
+        let product = (usdc_amount as u128)
+            .checked_mul(wsol_amount as u128)
+            .ok_or(ProvideLpErrors::MultiplicationError)?;
+
+        let liquidity = (product as f64).sqrt() as u64;
+
+        //deposit should satisfy the amount
+        if liquidity <= minimum_liquidity {
+            return err!(ProvideLpErrors::LiquidityTooLow);
+        }
+
+        return Ok((
+            liquidity.checked_sub(minimum_liquidity).unwrap(),
+            minimum_liquidity,
+        ));
+    }
+
+    fn normal_amount(&self, usdc_amount: u64, wsol_amount: u64) -> Result<(u64, u64)> {
+        let total_supply = self.lptokenmint.supply;
+
+        //share on the basis of usdc
+        let share_usdc = (usdc_amount as u128)
+            .checked_mul(total_supply as u128)
+            .ok_or(ProvideLpErrors::MultiplicationError)?
+            .checked_div(self.usdc_vault_account.amount as u128)
+            .ok_or(ProvideLpErrors::MultiplicationError)?;
+
+        //share on the basis of wsol
+        let share_wsol = (wsol_amount as u128)
+            .checked_mul(total_supply as u128)
+            .ok_or(ProvideLpErrors::MultiplicationError)?
+            .checked_div(self.wsol_vault_account.amount as u128)
+            .ok_or(ProvideLpErrors::MultiplicationError)?;
+
+        //take the smaller share from both the values
+        let liquidity = std::cmp::min(share_usdc, share_wsol) as u64;
+
+        //return
+        return Ok((liquidity, 0));
+    }
 
     fn mint_lptokens(&self, amount: u64) -> Result<()> {
         let cpi_accounts = MintTo {
