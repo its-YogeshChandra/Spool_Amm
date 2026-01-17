@@ -494,18 +494,68 @@ pub struct RemoveLiquidity<'info> {
     pub signer: Signer<'info>,
 
     //user accounts
+    #[account(mut,token::mint = pool_state_account.usdc_mint, token::authority = signer)]
     pub user_usdc_account: InterfaceAccount<'info, TokenAccount>,
+    #[account(mut,token::mint = pool_state_account.wsol_mint, token::authority = signer)]
     pub user_wsol_account: InterfaceAccount<'info, TokenAccount>,
 
     //vault accounts
+    #[account(mut)]
     pub usdc_vault_account: InterfaceAccount<'info, TokenAccount>,
+    #[account(mut)]
     pub wsol_vault_account: InterfaceAccount<'info, TokenAccount>,
 
     //token_program
     pub token_program: Interface<'info, TokenInterface>,
 
     //pool_state_account
+    #[account(mut)]
     pub pool_state_account: Account<'info, LpPoolAccountShape>,
+
+    //lp_token_mint
+    pub lp_mint: InterfaceAccount<'info, Mint>,
+
+    //user lp token ata
+    #[account(mut)]
+    pub user_lp_ata: InterfaceAccount<'info, TokenAccount>,
 }
 
-impl<'info> RemoveLiquidity<'info> {}
+#[error_code]
+pub enum RemoveLiquidityErrors {
+    #[msg("pool is empty")]
+    EmptyPool,
+}
+
+impl<'info> RemoveLiquidity<'info> {
+    fn calculate_amount(&self, burnamount: u64) -> Result<(u64, u64)> {
+        let total_supply = self.lp_mint.supply;
+        let usdc_vault_amount = self.user_usdc_account.amount;
+        let wsol_vault_amount = self.user_wsol_account.amount;
+
+        //safety check for the token account
+        if total_supply == 0 {
+            return err!(RemoveLiquidityErrors::EmptyPool);
+        }
+
+        let usdc_return_amount = (burnamount as u128)
+            .checked_mul(usdc_vault_amount as u128)
+            .unwrap()
+            .checked_div(total_supply as u128)
+            .unwrap() as u64;
+
+        let wsol_return_amount = (burnamount as u128)
+            .checked_mul(wsol_vault_amount as u128)
+            .unwrap()
+            .checked_div(total_supply as u128)
+            .unwrap() as u64;
+
+        Ok((usdc_return_amount, wsol_return_amount))
+    }
+
+    fn token_transfer(&self) {
+        self.tranfer_usdc();
+        self.tranfer_wsol();
+    }
+    fn tranfer_usdc(&self) {}
+    fn tranfer_wsol(&self) {}
+}
