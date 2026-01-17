@@ -59,17 +59,24 @@ pub struct Initialize<'info> {
     //create sol_vault
     #[account(init, payer = signer, token::mint= wsol_mint, token::authority = pool_stateaccount, token::token_program  = token_program, seeds = [b"usdc_vault",wsol_mint.key().as_ref()], bump)]
     pub wsol_vault: InterfaceAccount<'info, TokenAccount>,
+    //adding lp mint logic
+    //signer for the account
+
+    //the authority of this mint should be the contract
+    #[account(init, payer = signer, mint::decimals = 9, mint::authority = pool_stateaccount, mint::freeze_authority = signer.key())]
+    pub mint: InterfaceAccount<'info, Mint>,
 }
 
 //from the token program
 #[derive(Accounts)]
 pub struct ProvideLp<'info> {
     //tranfer the money from
+    #[account(mut)]
     pub signer: Signer<'info>,
 
     //mints for the vaults
-    pub usdc_mint: InterfaceAccount<'info, TokenAccount>,
-    pub wsol_mint: InterfaceAccount<'info, TokenAccount>,
+    pub usdc_mint: InterfaceAccount<'info, Mint>,
+    pub wsol_mint: InterfaceAccount<'info, Mint>,
 
     //user token account
     #[account(mut,token::mint = usdc_mint, token::authority= signer )]
@@ -83,79 +90,163 @@ pub struct ProvideLp<'info> {
 
     //token_program
     pub token_program: Interface<'info, TokenInterface>,
-}
 
-impl<'info> ProvideLp<'info> {
-    //providing lp mainly has signing function
-    fn token_transfer() {
-      let cpi_accounts 
-    }
-}
-
-//lp token mint
-#[derive(Accounts)]
-pub struct LpMint<'info> {
-    //signer for the account
-    #[account(mut)]
-    pub signer: Signer<'info>,
-
-    //the authority of this mint should be the contract
-    #[account(init, payer = signer, mint::decimals = 9, mint::authority = signer.key(), mint::freeze_authority = signer.key())]
-    pub mint: InterfaceAccount<'info, Mint>,
-    pub token_program: Interface<'info, TokenInterface>,
-    pub system_program: Program<'info, System>,
-}
-
-//lp token ata account
-#[derive(Accounts)]
-pub struct CreateLpAta<'info> {
-    //signer
-    #[account(mut)]
-    pub signer: Signer<'info>,
-
-    //mint account
+    // ---------minting lp token logic --------
+    //token account creation----
+    //mint of the lp
     pub lptokenmint: InterfaceAccount<'info, Mint>,
 
-    //account for the value
+    //account creation
     #[account(init, payer = signer, token::mint = lptokenmint, token::authority =  signer, token::token_program = token_program, seeds = [b"lptokenata", signer.key().as_ref()], bump)]
     pub lp_ata: InterfaceAccount<'info, TokenAccount>,
-    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
-}
 
-//lp token creating feature
-#[derive(Accounts)]
-pub struct Mintlptokens<'info> {
-    //signer
-    #[account(mut)]
-    pub signer: Signer<'info>,
-
-    //mint for lp tokens
-    #[account(mut)]
-    pub lptokenmint: InterfaceAccount<'info, Mint>,
+    //for minting lp tokens -------
+    //pool state acount for getting seeds
+    //mining authority
+    pub mint_authority: Account<'info, LpPoolAccountShape>,
 
     //user ata account
     #[account(mut,token::authority= signer, token::mint = lptokenmint)]
     pub lpata: InterfaceAccount<'info, TokenAccount>,
-
-    pub token_program: Interface<'info, TokenInterface>,
 }
 
-impl<'info> Mintlptokens<'info> {
-    pub fn mint_tokens(&self, amount: u64) -> Result<()> {
-        let cpi_accounts = MintTo {
-            mint: self.lptokenmint.to_account_info(),
-            to: self.lpata.to_account_info(),
+impl<'info> ProvideLp<'info> {
+    //providing lp mainly has signing function
+    fn token_transfer(&self, wsol_amount: u64, usdc_amount: u64) -> Result<()> {
+        //tranfer function for usdc and sol
+        self.tranfer_usdc(usdc_amount)?;
+        self.tranfer_wsol(wsol_amount)?;
+        Ok(())
+    }
+
+    fn tranfer_usdc(&self, amount: u64) -> Result<()> {
+        let decimals = self.usdc_mint.decimals;
+        let cpi_accounts = TransferChecked {
+            mint: self.usdc_mint.to_account_info(),
+            from: self.user_usdc_account.to_account_info(),
+            to: self.usdc_vault_account.to_account_info(),
             authority: self.signer.to_account_info(),
         };
 
-        //the cpi program
         let cpi_program = self.token_program.to_account_info();
         let cpi_context = CpiContext::new(cpi_program, cpi_accounts);
+
+        //tranfer token
+        token_interface::transfer_checked(cpi_context, amount, decimals)?;
+        Ok(())
+    }
+
+    fn tranfer_wsol(&self, amount: u64) -> Result<()> {
+        let decimals = self.wsol_mint.decimals;
+        let cpi_accounts = TransferChecked {
+            mint: self.wsol_mint.to_account_info(),
+            from: self.user_wsol_account.to_account_info(),
+            to: self.wsol_vault_account.to_account_info(),
+            authority: self.signer.to_account_info(),
+        };
+
+        let cpi_program = self.token_program.to_account_info();
+        let cpi_context = CpiContext::new(cpi_program, cpi_accounts);
+
+        //tranfer token
+        token_interface::transfer_checked(cpi_context, amount, decimals)?;
+        Ok(())
+    }
+
+    fn lptoken_amount() {}
+
+    fn mint_lptokens(&self, amount: u64) -> Result<()> {
+        let cpi_accounts = MintTo {
+            mint: self.lptokenmint.to_account_info(),
+            to: self.lp_ata.to_account_info(),
+            authority: self.mint_authority.to_account_info(),
+        };
+
+        let cpi_program = self.token_program.to_account_info();
+        let usdc_mint = self.usdc_mint.key();
+        let wsol_mint = self.wsol_mint.key();
+        let bump = self.mint_authority.bump;
+        let seeds = [
+            b"pool_state",
+            usdc_mint.as_ref(),
+            wsol_mint.as_ref(),
+            &[bump],
+        ];
+        let signer_seeds = &[&seeds[..]];
+
+        let cpi_context = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
+
         token_interface::mint_to(cpi_context, amount)?;
         Ok(())
     }
 }
+
+//
+// //lp token mint
+// #[derive(Accounts)]
+// pub struct LpMint<'info> {
+//     //signer for the account
+//     #[account(mut)]
+//     pub signer: Signer<'info>,
+//
+//     //the authority of this mint should be the contract
+//     #[account(init, payer = signer, mint::decimals = 9, mint::authority = signer.key(), mint::freeze_authority = signer.key())]
+//     pub mint: InterfaceAccount<'info, Mint>,
+//     pub token_program: Interface<'info, TokenInterface>,
+//     pub system_program: Program<'info, System>,
+// }
+//
+// //lp token ata account
+// #[derive(Accounts)]
+// pub struct CreateLpAta<'info> {
+//     //signer
+//     #[account(mut)]
+//     pub signer: Signer<'info>,
+//
+//     //mint account
+//     pub lptokenmint: InterfaceAccount<'info, Mint>,
+//
+//     //account for the value
+//     #[account(init, payer = signer, token::mint = lptokenmint, token::authority =  signer, token::token_program = token_program, seeds = [b"lptokenata", signer.key().as_ref()], bump)]
+//     pub lp_ata: InterfaceAccount<'info, TokenAccount>,
+//     pub token_program: Interface<'info, TokenInterface>,
+//     pub system_program: Program<'info, System>,
+// }
+//
+// //lp token creating feature
+// #[derive(Accounts)]
+// pub struct Mintlptokens<'info> {
+//     //signer
+//     #[account(mut)]
+//     pub signer: Signer<'info>,
+//
+//     //mint for lp tokens
+//     #[account(mut)]
+//     pub lptokenmint: InterfaceAccount<'info, Mint>,
+//
+//     //user ata account
+//     #[account(mut,token::authority= signer, token::mint = lptokenmint)]
+//     pub lpata: InterfaceAccount<'info, TokenAccount>,
+//
+//     pub token_program: Interface<'info, TokenInterface>,
+// }
+//
+// impl<'info> Mintlptokens<'info> {
+//     pub fn mint_tokens(&self, amount: u64) -> Result<()> {
+//         let cpi_accounts = MintTo {
+//             mint: self.lptokenmint.to_account_info(),
+//             to: self.lpata.to_account_info(),
+//             authority: self.signer.to_account_info(),
+//         };
+//
+//         //the cpi program
+//         let cpi_program = self.token_program.to_account_info();
+//         let cpi_context = CpiContext::new(cpi_program, cpi_accounts);
+//         token_interface::mint_to(cpi_context, amount)?;
+//         Ok(())
+//     }
+// }
 
 //struct for swap
 #[derive(Accounts)]
