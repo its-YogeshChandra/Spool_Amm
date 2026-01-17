@@ -12,13 +12,23 @@ pub mod spool_amm {
     use super::*;
 
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+        //populate the pool_state_account
+        let pool = &mut ctx.accounts.pool_stateaccount;
+        pool.bump = ctx.bumps.pool_stateaccount;
+        pool.usdc_mint = ctx.accounts.usdc_mint.key();
+        pool.wsol_mint = ctx.accounts.wsol_mint.key();
+        pool.usdc_vault_address = ctx.accounts.usdc_vault.key();
+        pool.wsol_vault_address = ctx.accounts.wsol_vault.key();
         msg!("Greetings from: {:?}", ctx.program_id);
         Ok(())
     }
 
-    //create brain pool and the vault
-    //create the mintfor the lp tokens
-    //create ata creator for lp tokens
+    //funtion to swap tokens
+    pub fn swap(ctx: Context<SwapTokens>, amount_toswap: u64) -> Result<()> {
+        ctx.accounts.main_swap_function(amount_toswap)?;
+        msg!("swap is working");
+        Ok(())
+    }
 
     //function to remove lp
     pub fn remove_liquidity(ctx: Context<RemoveLiquidity>, burnamount: u64) -> Result<()> {
@@ -318,6 +328,21 @@ pub enum SwapTokenErrors {
 
 //impl  for swap
 impl<'info> SwapTokens<'info> {
+    pub fn main_swap_function(&self, amount_toswap: u64) -> Result<()> {
+        //run the checks
+        self.checks(amount_toswap)?;
+
+        //deduct fee
+        let input_amount = self.deductfee(amount_toswap);
+
+        //calculate output amount
+        let output_amount = self.output_amount_calculation(input_amount)?;
+
+        //call the swap function
+        self.swaptokens(input_amount, output_amount as u64)?;
+        Ok(())
+    }
+
     pub fn checks(&self, amount_toswap: u64) -> Result<()> {
         //check for the amount
         if self.user_input_account.amount < amount_toswap {
@@ -359,7 +384,11 @@ impl<'info> SwapTokens<'info> {
         (amount_needed - fee) as u64
     }
 
-    pub fn swaptokens(&self, amount_toswap: u64) {}
+    pub fn swaptokens(&self, input_amount: u64, output_amount: u64) -> Result<()> {
+        self.transferinput(input_amount)?;
+        self.transferoutput(output_amount)?;
+        Ok(())
+    }
 
     pub fn output_amount_calculation(&self, input_amount: u64) -> Result<u64> {
         let input_vaultamount = self.input_vault_account.amount as u128;
@@ -385,7 +414,7 @@ impl<'info> SwapTokens<'info> {
         Ok(outputamount as u64)
     }
 
-    fn tranferinput(&self, amount_toswap: u64) -> Result<()> {
+    fn transferinput(&self, amount_toswap: u64) -> Result<()> {
         let decimals = self.input_mint.decimals;
         //tranfer from user to input vault
         let cpi_accounts = TransferChecked {
