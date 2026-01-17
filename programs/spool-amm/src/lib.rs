@@ -29,7 +29,7 @@ pub struct LpPoolAccountShape {
     pub usdc_mint: Pubkey,
     pub wsol_mint: Pubkey,
     pub usdc_vault_address: Pubkey,
-    pub sol_vault_address: Pubkey,
+    pub wsol_vault_address: Pubkey,
     pub lp_token_mint: Pubkey,
     pub bump: u8,
 }
@@ -337,6 +337,10 @@ pub struct SwapTokens<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
 
+    //mints for the tokens
+    pub input_mint: InterfaceAccount<'info, Mint>,
+    pub output_mint: InterfaceAccount<'info, Mint>,
+
     //user accounts
     #[account(mut, token::authority = signer)]
     pub user_input_account: InterfaceAccount<'info, TokenAccount>,
@@ -347,22 +351,161 @@ pub struct SwapTokens<'info> {
     #[account(mut, token::authority = pool_stateaccount)]
     pub input_vault_account: InterfaceAccount<'info, TokenAccount>,
     #[account(mut, token::authority = pool_stateaccount)]
-    pub output_vault_accont: InterfaceAccount<'info, TokenAccount>,
+    pub output_vault_account: InterfaceAccount<'info, TokenAccount>,
 
     //pool state for the vault
     pub pool_stateaccount: Account<'info, LpPoolAccountShape>,
+
+    //token program
+    pub token_program: Interface<'info, TokenInterface>,
+}
+
+//error enum for the swaptokens
+#[error_code]
+pub enum SwapTokenErrors {
+    #[msg("swap amount is more then available balance")]
+    AmountError,
+
+    #[msg("input vault is incorrect")]
+    InputVaultError,
+
+    #[msg("output vault is incorrect")]
+    OutputVaultError,
+
+    #[msg("swap error")]
+    SwapError,
 }
 
 //impl  for swap
 impl<'info> SwapTokens<'info> {
-    pub fn checks() {}
+    pub fn checks(&self, amount_toswap: u64) -> Result<()> {
+        //check for the amount
+        if self.user_input_account.amount < amount_toswap {
+            //throw the error
+            return err!(SwapTokenErrors::AmountError);
+        }
 
-    pub fn deductfee() {}
+        //check for the input and output vault
+        if self.input_vault_account.key() == self.pool_stateaccount.usdc_vault_address {
+            //then output vault should be the wsol vault
+            if self.output_vault_account.key() != self.pool_stateaccount.wsol_vault_address {
+                return err!(SwapTokenErrors::OutputVaultError);
+            } else if self.input_vault_account.key() == self.pool_stateaccount.wsol_vault_address {
+                //then output vault should be the usdc vault
+                if self.output_vault_account.key() != self.pool_stateaccount.usdc_vault_address {
+                    return err!(SwapTokenErrors::OutputVaultError);
+                }
+            } else {
+                //throw the eror for input vault
+                return err!(SwapTokenErrors::InputVaultError);
+            }
+        }
 
-    pub fn swaptokens() {}
+        Ok(())
+    }
 
-    pub fn distributefee() {}
+    //function to deduct fee
+    pub fn deductfee(&self, amouunt_in: u64) -> u64 {
+        //constants for the fee
+        const FEE_NUMERATOR: u128 = 30;
+        const FEE_DENOMINATOR: u128 = 1000;
 
-    fn tranferinput() {}
-    fn transferoutput() {}
+        let amount_needed = amouunt_in as u128;
+
+        //calculate the fee
+        let fee = (amount_needed * FEE_NUMERATOR) / FEE_DENOMINATOR;
+
+        //return input_amount - fee
+        (amount_needed - fee) as u64
+    }
+
+    pub fn swaptokens(&self, amount_toswap: u64) {}
+
+    pub fn output_amount_calculation(&self, input_amount: u64) -> Result<u64> {
+        let input_vaultamount = self.input_vault_account.amount as u128;
+        let output_vaultamount = self.output_vault_account.amount as u128;
+
+        //product before swap
+        let product_before_swap = (input_vaultamount * output_vaultamount) as u128;
+
+        //formula to calculate amount
+        let outputamount =
+            (input_vaultamount * output_vaultamount) / (input_vaultamount + input_amount as u128);
+
+        //check if the product before and after is same
+        let input_vault_afterswap = input_vaultamount + input_amount as u128;
+        let output_vault_afterswap = output_vaultamount - outputamount;
+
+        let product_after_swap = (input_vault_afterswap * output_vault_afterswap) as u128;
+
+        if product_after_swap != product_before_swap {
+            return err!(SwapTokenErrors::SwapError);
+        }
+
+        Ok(outputamount as u64)
+    }
+
+    fn tranferinput(&self, amount_toswap: u64) -> Result<()> {
+        let decimals = self.input_mint.decimals;
+        //tranfer from user to input vault
+        let cpi_accounts = TransferChecked {
+            mint: self.input_mint.to_account_info(),
+            from: self.user_input_account.to_account_info(),
+            to: self.input_vault_account.to_account_info(),
+            authority: self.signer.to_account_info(),
+        };
+
+        let cpi_program = self.token_program.to_account_info();
+        let cpi_context = CpiContext::new(cpi_program, cpi_accounts);
+        token_interface::transfer_checked(cpi_context, amount_toswap, decimals)?;
+        Ok(())
+    }
+    fn transferoutput(&self, amount_transfer: u64) -> Result<()> {
+        let usdc_mint = self.pool_stateaccount.usdc_mint;
+        let wsol_mint = self.pool_stateaccount.wsol_mint;
+        let decimals = self.output_mint.decimals;
+        //tranfer from user to input vault
+        let cpi_accounts = TransferChecked {
+            mint: self.output_mint.to_account_info(),
+            from: self.output_vault_account.to_account_info(),
+            to: self.user_output_account.to_account_info(),
+            authority: self.signer.to_account_info(),
+        };
+
+        let seeds = [
+            b"pool_state",
+            usdc_mint.as_ref(),
+            wsol_mint.as_ref(),
+            &[self.pool_stateaccount.bump],
+        ];
+        let signer_seeds = &[&seeds[..]];
+
+        let cpi_program = self.token_program.to_account_info();
+        let cpi_context = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
+        token_interface::transfer_checked(cpi_context, amount_transfer, decimals)?;
+        Ok(())
+    }
 }
+
+//for withdrawing liquidity;
+#[derive(Accounts)]
+pub struct RemoveLiquidity<'info> {
+    //signer
+    pub signer: Signer<'info>,
+
+    //user accounts
+    pub user_usdc_account: InterfaceAccount<'info, TokenAccount>,
+    pub user_wsol_account: InterfaceAccount<'info, TokenAccount>,
+
+    //vault accounts
+    pub usdc_vault_account: InterfaceAccount<'info, TokenAccount>,
+    pub wsol_vault_account: InterfaceAccount<'info, TokenAccount>,
+
+    //token_program
+    pub token_program: Interface<'info, TokenInterface>,
+
+    //pool_state_account
+    pub pool_state_account: Account<'info, LpPoolAccountShape>,
+}
+
+impl<'info> RemoveLiquidity<'info> {}
