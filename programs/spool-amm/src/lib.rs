@@ -70,17 +70,17 @@ pub struct Initialize<'info> {
     //system program field
     pub system_program: Program<'info, System>,
     //account init
-    #[account(init , payer = signer, space = 8+LpPoolAccountShape::INIT_SPACE, seeds = [b"pool_state", usdc_mint.key().as_ref(), wsol_mint.key().as_ref()], bump)]
+    #[account(init , payer = signer, space = 8+LpPoolAccountShape::INIT_SPACE, seeds = [b"pool_state_v3", usdc_mint.key().as_ref(), wsol_mint.key().as_ref()], bump)]
     pub pool_stateaccount: Account<'info, LpPoolAccountShape>,
 
     //token program
     pub token_program: Interface<'info, TokenInterface>,
     //create usdc_vault
-    #[account(init, payer = signer, token::mint= usdc_mint, token::authority = pool_stateaccount, token::token_program  = token_program, seeds = [b"usdc_vault",usdc_mint.key().as_ref()], bump)]
+    #[account(init, payer = signer, token::mint= usdc_mint, token::authority = pool_stateaccount, token::token_program  = token_program, seeds = [b"usdc_vault_v3",usdc_mint.key().as_ref()], bump)]
     pub usdc_vault: InterfaceAccount<'info, TokenAccount>,
 
     //create sol_vault
-    #[account(init, payer = signer, token::mint= wsol_mint, token::authority = pool_stateaccount, token::token_program  = token_program, seeds = [b"usdc_vault",wsol_mint.key().as_ref()], bump)]
+    #[account(init, payer = signer, token::mint= wsol_mint, token::authority = pool_stateaccount, token::token_program  = token_program, seeds = [b"sol_vault_v3",wsol_mint.key().as_ref()], bump)]
     pub wsol_vault: InterfaceAccount<'info, TokenAccount>,
     //adding lp mint logic
     //signer for the account
@@ -131,7 +131,7 @@ pub struct ProvideLp<'info> {
     #[account(mut)]
     pub lptokenmint: InterfaceAccount<'info, Mint>,
     //account creation
-    #[account(init_if_needed, payer = signer, token::mint = lptokenmint, token::authority = signer, token::token_program = token_program, seeds = [b"lptokenata", signer.key().as_ref()], bump)]
+    #[account(init_if_needed, payer = signer, token::mint = lptokenmint, token::authority = signer, token::token_program = token_program, seeds = [b"lptokenata_v3", signer.key().as_ref()], bump)]
     pub lp_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     pub system_program: Program<'info, System>,
 
@@ -275,7 +275,7 @@ impl<'info> ProvideLp<'info> {
         let wsol_mint = self.wsol_mint.key();
         let bump = self.mint_authority.bump;
         let seeds = [
-            b"pool_state",
+            b"pool_state_v3",
             usdc_mint.as_ref(),
             wsol_mint.as_ref(),
             &[bump],
@@ -422,6 +422,7 @@ impl<'info> SwapTokens<'info> {
         Ok(outputamount as u64)
     }
 
+    //transfer input for the
     fn transferinput(&self, amount_toswap: u64) -> Result<()> {
         let decimals = self.input_mint.decimals;
         //tranfer from user to input vault
@@ -450,7 +451,7 @@ impl<'info> SwapTokens<'info> {
         };
 
         let seeds = [
-            b"pool_state",
+            b"pool_state_v3",
             usdc_mint.as_ref(),
             wsol_mint.as_ref(),
             &[self.pool_stateaccount.bump],
@@ -546,8 +547,8 @@ impl<'info> RemoveLiquidity<'info> {
     }
 
     fn token_transfer(&self, transferusdcamount: u64, transfersolamount: u64) -> Result<()> {
-        self.tranfer_usdc(transferusdcamount)?;
-        self.tranfer_wsol(transfersolamount)?;
+        self.transfer_usdc(transferusdcamount)?;
+        self.transfer_wsol(transfersolamount)?;
         Ok(())
     }
 
@@ -563,34 +564,59 @@ impl<'info> RemoveLiquidity<'info> {
         token_interface::burn(cpi_context, burnamount)?;
         Ok(())
     }
-    fn tranfer_usdc(&self, tranferusdcamount: u64) -> Result<()> {
+
+    //transfer usdc
+    fn transfer_usdc(&self, tranferusdcamount: u64) -> Result<()> {
         let decimals = self.usdc_mint.decimals;
         //tranfer from user to input vault
         let cpi_accounts = TransferChecked {
             mint: self.usdc_mint.to_account_info(),
             to: self.user_usdc_account.to_account_info(),
             from: self.usdc_vault_account.to_account_info(),
-            authority: self.signer.to_account_info(),
+            authority: self.pool_state_account.to_account_info(),
         };
 
+        let usdc_mint = self.pool_state_account.usdc_mint;
+        let wsol_mint = self.pool_state_account.wsol_mint;
+
+        let seeds = [
+            b"pool_state_v3",
+            usdc_mint.as_ref(),
+            wsol_mint.as_ref(),
+            &[self.pool_state_account.bump],
+        ];
+        let signer_seeds = &[&seeds[..]];
+
         let cpi_program = self.token_program.to_account_info();
-        let cpi_context = CpiContext::new(cpi_program, cpi_accounts);
+        let cpi_context = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
         token_interface::transfer_checked(cpi_context, tranferusdcamount, decimals)?;
         Ok(())
     }
 
-    fn tranfer_wsol(&self, transfersolamount: u64) -> Result<()> {
+    //transfer_wsol
+    fn transfer_wsol(&self, transfersolamount: u64) -> Result<()> {
         let decimals = self.wsol_mint.decimals;
         //tranfer from user to input vault
         let cpi_accounts = TransferChecked {
             mint: self.wsol_mint.to_account_info(),
             to: self.user_wsol_account.to_account_info(),
             from: self.wsol_vault_account.to_account_info(),
-            authority: self.signer.to_account_info(),
+            authority: self.pool_state_account.to_account_info(),
         };
 
+        let usdc_mint = self.pool_state_account.usdc_mint;
+        let wsol_mint = self.pool_state_account.wsol_mint;
+
+        let seeds = [
+            b"pool_state_v3",
+            usdc_mint.as_ref(),
+            wsol_mint.as_ref(),
+            &[self.pool_state_account.bump],
+        ];
+        let signer_seeds = &[&seeds[..]];
+
         let cpi_program = self.token_program.to_account_info();
-        let cpi_context = CpiContext::new(cpi_program, cpi_accounts);
+        let cpi_context = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
         token_interface::transfer_checked(cpi_context, transfersolamount, decimals)?;
         Ok(())
     }
