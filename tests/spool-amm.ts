@@ -23,7 +23,7 @@ describe("spool-amm", () => {
   const program = anchor.workspace.spoolAmm as Program<SpoolAmm>;
 
   // Keypair for user
-  const user_keypair = anchor.web3.Keypair.fromSecretKey(base58.decode("3cJruu3vu3ym1U6dxuYivwyMqrPBnWJFtap26DSMqP56DjjTRpF8mpPMKJgep7o8v9sLhzJCdDLW9vU1PW1r9X9P"));
+  const user_keypair = anchor.web3.Keypair.fromSecretKey(base58.decode(""));
 
   // USDC and SOL mint addresses
   const usdc_mint_address = "Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr"
@@ -35,10 +35,10 @@ describe("spool-amm", () => {
   // LP mint keypair - generated for initialization
   const lpMintKeypair = Keypair.generate();
 
-  // Correct seeds matching lib.rs
-  const usdc_vault_seed = [Buffer.from("usdc_vault"), usdcMintPubkey.toBuffer()];
-  const wsol_vault_seed = [Buffer.from("usdc_vault"), wsolMintPubkey.toBuffer()]; // Note: program uses same seed prefix
-  const pool_state_seed = [Buffer.from("pool_state"), usdcMintPubkey.toBuffer(), wsolMintPubkey.toBuffer()];
+  // Correct seeds matching lib.rs (v3 suffixes)
+  const usdc_vault_seed = [Buffer.from("usdc_vault_v3"), usdcMintPubkey.toBuffer()];
+  const wsol_vault_seed = [Buffer.from("sol_vault_v3"), wsolMintPubkey.toBuffer()];
+  const pool_state_seed = [Buffer.from("pool_state_v3"), usdcMintPubkey.toBuffer(), wsolMintPubkey.toBuffer()];
 
   // Find PDAs
   const [usdcVaultPda] = PublicKey.findProgramAddressSync(usdc_vault_seed, program.programId);
@@ -129,8 +129,8 @@ describe("spool-amm", () => {
     const userUsdcAccount = await getAssociatedTokenAddress(usdcMintPubkey, user_keypair.publicKey);
     const userWsolAccount = await getOrCreateATA(wsolMintPubkey, user_keypair.publicKey, true, 1);
 
-    // LP ATA seed
-    const lpAtaSeed = [Buffer.from("lptokenata"), user_keypair.publicKey.toBuffer()];
+    // LP ATA seed (v3 suffix)
+    const lpAtaSeed = [Buffer.from("lptokenata_v3"), user_keypair.publicKey.toBuffer()];
     const [lpAtaPda] = PublicKey.findProgramAddressSync(lpAtaSeed, program.programId);
 
     // Amounts to provide
@@ -262,8 +262,8 @@ describe("spool-amm", () => {
     const userUsdcAccount = await getAssociatedTokenAddress(usdcMintPubkey, user_keypair.publicKey);
     const userWsolAccount = await getAssociatedTokenAddress(wsolMintPubkey, user_keypair.publicKey);
 
-    // LP ATA seed
-    const lpAtaSeed = [Buffer.from("lptokenata"), user_keypair.publicKey.toBuffer()];
+    // LP ATA seed (v3 suffix)
+    const lpAtaSeed = [Buffer.from("lptokenata_v3"), user_keypair.publicKey.toBuffer()];
     const [lpAtaPda] = PublicKey.findProgramAddressSync(lpAtaSeed, program.programId);
 
     // Check LP balance

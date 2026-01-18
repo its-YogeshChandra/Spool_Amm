@@ -86,7 +86,7 @@ pub struct Initialize<'info> {
     //signer for the account
 
     //the authority of this mint should be the contract
-    #[account(init, payer = signer, mint::decimals = 9, mint::authority = pool_stateaccount, mint::freeze_authority = pool_stateaccount.key())]
+    #[account(init, payer = signer, mint::decimals = 9, mint::authority = pool_stateaccount, mint::freeze_authority = pool_stateaccount)]
     pub mint: InterfaceAccount<'info, Mint>,
 }
 
@@ -117,9 +117,9 @@ pub struct ProvideLp<'info> {
     pub user_wsol_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     //vault accounts
-    #[account(mut)]
+    #[account(mut, token::mint = usdc_mint, token::authority = mint_authority)]
     pub usdc_vault_account: Box<InterfaceAccount<'info, TokenAccount>>,
-    #[account(mut)]
+    #[account(mut, token::mint = wsol_mint, token::authority = mint_authority)]
     pub wsol_vault_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     //token_program
@@ -411,18 +411,18 @@ impl<'info> SwapTokens<'info> {
 
         //check if the product before and after is same
         let input_vault_afterswap = input_vaultamount + input_amount as u128;
-        let output_vault_afterswap = output_vaultamount - outputamount;
+        let output_vault_afterswap = output_vaultamount - outputamount as u128;
 
         let product_after_swap = (input_vault_afterswap * output_vault_afterswap) as u128;
 
-        if product_after_swap != product_before_swap {
+        if product_after_swap < product_before_swap {
             return err!(SwapTokenErrors::SwapError);
         }
 
         Ok(outputamount as u64)
     }
 
-    //transfer input for the
+    //transfer input
     fn transferinput(&self, amount_toswap: u64) -> Result<()> {
         let decimals = self.input_mint.decimals;
         //tranfer from user to input vault
@@ -438,6 +438,8 @@ impl<'info> SwapTokens<'info> {
         token_interface::transfer_checked(cpi_context, amount_toswap, decimals)?;
         Ok(())
     }
+
+    //transfer output
     fn transferoutput(&self, amount_transfer: u64) -> Result<()> {
         let usdc_mint = self.pool_stateaccount.usdc_mint;
         let wsol_mint = self.pool_stateaccount.wsol_mint;
@@ -495,6 +497,7 @@ pub struct RemoveLiquidity<'info> {
     pub pool_state_account: Account<'info, LpPoolAccountShape>,
 
     //lp_token_mint
+    #[account(mut)]
     pub lp_mint: InterfaceAccount<'info, Mint>,
 
     //user lp token ata
@@ -523,8 +526,8 @@ impl<'info> RemoveLiquidity<'info> {
 
     fn calculate_amount(&self, burnamount: u64) -> Result<(u64, u64)> {
         let total_supply = self.lp_mint.supply;
-        let usdc_vault_amount = self.user_usdc_account.amount;
-        let wsol_vault_amount = self.user_wsol_account.amount;
+        let usdc_vault_amount = self.usdc_vault_account.amount;
+        let wsol_vault_amount = self.wsol_vault_account.amount;
 
         //safety check for the token account
         if total_supply == 0 {
@@ -596,6 +599,7 @@ impl<'info> RemoveLiquidity<'info> {
     //transfer_wsol
     fn transfer_wsol(&self, transfersolamount: u64) -> Result<()> {
         let decimals = self.wsol_mint.decimals;
+
         //tranfer from user to input vault
         let cpi_accounts = TransferChecked {
             mint: self.wsol_mint.to_account_info(),
